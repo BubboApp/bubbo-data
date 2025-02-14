@@ -1,4 +1,5 @@
-test/
-FAISS/embedds_para_carlos.csv
 FAISS/embedds_para_carlos.csv
 FAISS/all_content_embeddings.csv
+FAISS/index_hnsw.idx
+Test/bubbo-dfba0-firebase-adminsdk-fbsvc-ec66b76bce.json
+Test/

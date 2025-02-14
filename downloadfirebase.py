@@ -8,7 +8,7 @@ import time
 import os
 
 # 🔹 1️⃣ Inicializar Firebase
-cred_path = r'C:\Users\Carlo\Desktop\Proyectos\data\bubbo-data\bubbo-dfba0-firebase-adminsdk-fbsvc-79dc4511e7 (5).json'
+cred_path = r'C:\Users\Carlo\Desktop\Proyectos\data\bubbo-data\FAISS\bubbo-dfba0-firebase-adminsdk-fbsvc-ec66b76bce.json'
 cred = credentials.Certificate(cred_path)
 
 # Inicializa Firebase solo si no está ya inicializado

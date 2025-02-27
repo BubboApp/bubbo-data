@@ -9,7 +9,7 @@ if not firebase_admin._apps:
 
 db = firestore.client()
 
-json_file_path = r'C:\Users\Carlo\Desktop\Proyectos\data\bubbo-data\test\extracted_data.json'
+json_file_path = r'C:\Users\Carlo\Desktop\Proyectos\data\bubbo-data\recommendation-engine-alpha\archivo.json'
 
 # Cargar el archivo JSON
 with open(json_file_path, 'r', encoding='utf-8') as file:
@@ -21,6 +21,6 @@ if isinstance(data, list):
     for movie in tqdm(data, desc="Agregando documentos", unit="película", ncols=100):
         # Usar el valor de la columna "ID" como el ID del documento
         movie_id = str(movie['ID'])
-        db.collection('Data_Clean').document(movie_id).set(movie)
+        db.collection('Data_EN').document(movie_id).set(movie)
 else:
     print("Error: El JSON debe ser una lista.")

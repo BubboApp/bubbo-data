@@ -1,14 +1,19 @@
 import pandas as pd
-from langdetect import detect , DetectorFactory
 import numpy as np
 from tqdm import tqdm
 import tmdbsimple as tmdb
 
-tqdm.pandas()
 
+tqdm.pandas()
+print("Cargando data")
 data = pd.read_csv(r"C:\Users\Carlo\Desktop\Proyectos\data\bubbo-data\Test\extracted_data.csv")
 
 df = data.copy()
+
+if df[['Genre', 'CleanTitle', 'Synopsis', 'Directors', 'Cast']].isna().any().any():
+    cols_a_rellenar = ['Genre', 'CleanTitle', 'Synopsis', 'Directors', 'Cast']
+    df[cols_a_rellenar] = df[cols_a_rellenar].fillna({col: f'No {col}' for col in cols_a_rellenar})
+
 
 def ponderate_and_deduplicate(df):
     """
@@ -30,9 +35,9 @@ def ponderate_and_deduplicate(df):
     df.drop_duplicates(subset='ID', keep='first', inplace=True)
 
     return df
-
+print("Ponderando y eliminando duplicados")
 ponderate_and_deduplicate(df)
-
+print("Actualizando IDs de IMDb a TMDB")
 def actualizar_ids_tmdb(df):
     """Actualiza IDs de IMDb a TMDB en un DataFrame, modificando la columna 'ID'."""
     
@@ -67,93 +72,94 @@ def actualizar_ids_tmdb(df):
 
 actualizar_ids_tmdb(df)
 
-def completar_datos_tmdb(df):
-    """
-    Completa datos faltantes en un DataFrame usando la API de TMDB.
-    Intenta completar datos varias veces solo para las filas con datos faltantes.
+# Configuración de API de TMDb
+tmdb.API_KEY = '7425c75e59119610b20640317310953a'
 
+def buscar_y_completar(row):
+    """Busca y completa datos faltantes de una fila en TMDb."""
+    id_tmdb = row['ID']
+
+    # Si la fila ya tiene datos completos, no hace nada
+    if all(row[col] != f'No {col}' for col in ['CleanTitle', 'Genre', 'Synopsis', 'Cast', 'Directors']):
+        return row
+
+    try:
+        # Obtener detalles de la película/serie
+        details = tmdb.Movies(id_tmdb).info() or tmdb.TV(id_tmdb).info()
+
+        # Si no encuentra detalles, intentar con IMDb
+        if not details:
+            response = tmdb.Find(id_tmdb).info(external_source='imdb_id')
+            id_tmdb = response.get('movie_results', [{}])[0].get('id') or response.get('tv_results', [{}])[0].get('id')
+            details = tmdb.Movies(id_tmdb).info() if id_tmdb else {}
+
+        # Actualizar solo los valores faltantes
+        row['CleanTitle'] = details.get('title', details.get('name', '')) if row['CleanTitle'] == 'No Title' else row['CleanTitle']
+        row['Genre'] = ', '.join(g['name'] for g in details.get('genres', [])) if row['Genre'] == 'No Genre' else row['Genre']
+        row['Synopsis'] = details.get('overview', '') if row['Synopsis'] == 'No Synopsis' else row['Synopsis']
+        row['Cast'] = ', '.join(m['name'] for m in details.get('credits', {}).get('cast', [])[:5]) if row['Cast'] == 'No Cast' else row['Cast']
+        row['Directors'] = ', '.join(
+            m['name'] for m in details.get('credits', {}).get('crew', []) if m['job'] == 'Director'
+        ) if row['Directors'] == 'No Directors' else row['Directors']
+
+    except Exception as e:
+        print(f"⚠️ Error en ID {id_tmdb}: {e}")
+
+    return row
+
+print('completar_datos_tmdb')
+def completar_datos_tmdb(df, chunk_size=100_000, output_file="datos_actualizados.csv"):
+    """
+    Completa los datos de TMDb procesando el DataFrame en bloques para reducir el consumo de RAM.
+    
     Args:
-        df: El DataFrame con datos de películas/series.
-
+        df (DataFrame): El DataFrame con datos de películas/series.
+        chunk_size (int): Tamaño de los bloques a procesar en memoria.
+        output_file (str): Nombre del archivo donde se guardará el resultado.
+    
     Returns:
-        El DataFrame con los datos completados.
+        DataFrame con los datos completados.
     """
-    api_key = '7425c75e59119610b20640317310953a' 
-    tmdb.API_KEY = api_key
+    tqdm.pandas()  # Habilita barra de progreso en Pandas
 
-    def buscar_y_completar(row):
-        """Función interna para buscar y completar datos de una fila."""
-        id_tmdb = row['ID']
+    # Filtrar solo las filas con datos faltantes
+    mask = df[['CleanTitle', 'Genre', 'Synopsis', 'Cast', 'Directors']].isin(
+        ['No Title', 'No Genre', 'No Synopsis', 'No Cast', 'No Directors']
+    ).any(axis=1)
+    df_faltantes = df[mask]
 
-        # Verifica si la fila ya tiene la información completa
-        if not (pd.isna(row['CleanTitle']) or row['CleanTitle'] == 'No Title' or \
-                pd.isna(row['Genre']) or row['Genre'] == 'No Genre' or \
-                pd.isna(row['Synopsis']) or row['Synopsis'] == 'No Synopsis' or \
-                pd.isna(row['Cast']) or row['Cast'] == 'No Cast' or \
-                pd.isna(row['Directors']) or row['Directors'] == 'No Directors'):
-            return row  # Si ya tiene la información, no hace nada
+    # Procesar en bloques para evitar sobrecarga de memoria
+    for start in tqdm(range(0, len(df_faltantes), chunk_size), desc="Procesando bloques"):
+        end = start + chunk_size
+        df_chunk = df_faltantes.iloc[start:end].progress_apply(buscar_y_completar, axis=1)
 
-        try:
-            details = tmdb.Movies(id_tmdb).info()
-            if not details:
-                details = tmdb.TV(id_tmdb).info()
+        # Guardar cada bloque en disco para evitar consumir toda la RAM
+        df_chunk.to_csv(f'tmdb_chunk_{start}.csv', index=False)
 
-            if not details:
-                find = tmdb.Find(id_tmdb)
-                response = find.info(external_source='imdb_id')
-                if response['movie_results']:
-                    id_tmdb = response['movie_results'][0]['id']
-                    details = tmdb.Movies(id_tmdb).info()
-                elif response['tv_results']:
-                    id_tmdb = response['tv_results'][0]['id']
-                    details = tmdb.TV(id_tmdb).info()
+        # Opcional: ir actualizando el DataFrame principal
+        df.update(df_chunk)
 
-            if details:
-                if pd.isna(row['CleanTitle']) or row['CleanTitle'] == 'No Title':
-                    row['CleanTitle'] = details['title'] if 'title' in details else details['name']
-                if pd.isna(row['Genre']) or row['Genre'] == 'No Genre':
-                    row['Genre'] = ', '.join([genre['name'] for genre in details.get('genres', [])])
-                if pd.isna(row['Synopsis']) or row['Synopsis'] == 'No Synopsis':
-                    row['Synopsis'] = details.get('overview', '')
-                if pd.isna(row['Cast']) or row['Cast'] == 'No Cast':
-                    cast = [member['name'] for member in details.get('credits', {}).get('cast', [])]
-                    row['Cast'] = ', '.join(cast[:5])
-                if pd.isna(row['Directors']) or row['Directors'] == 'No Directors':
-                    directors = [member['name'] for member in details.get('credits', {}).get('crew', []) if member['job'] == 'Director']
-                    row['Directors'] = ', '.join(directors)
+    # Calcular Score en memoria sin afectar todo el DataFrame
+    puntuaciones = {'CleanTitle': 2, 'Genre': 2, 'Synopsis': 2, 'Directors': 0.5, 'Cast': 0.5}
+    df['Score'] = sum((df[col] != f'No {col}') * pts for col, pts in puntuaciones.items())
 
-            return row
+    print(df['Score'].value_counts())
 
-        except Exception as e:
-            print(f"Error al buscar o completar datos para ID {id_tmdb}: {e}")
-            return row
+    # Filtrar solo los datos completos
+    df_final = df[df['Score'] >= 6]
+    
+    # Guardar el resultado final
+    df_final.to_csv(output_file, index=False)
+    
+    return df_final
 
-    tqdm.pandas()
-    max_attempts = 3
-    for _ in range(max_attempts):
-        df_faltantes = df[
-            (df['CleanTitle'] == 'No Title') | 
-            (df['Genre'] == 'No Genre') | 
-            (df['Synopsis'] == 'No Synopsis') | 
-            (df['Cast'] == 'No Cast') | 
-            (df['Directors'] == 'No Directors')
-        ]
-        df_faltantes = df_faltantes.progress_apply(buscar_y_completar, axis=1)
-        df.update(df_faltantes)
+# Ejecutar la función optimizada
+df_actualizado = completar_datos_tmdb(df)
 
-        df['Score'] = 0
-        df['Score'] += (df['CleanTitle'] != 'No Title') * 2
-        df['Score'] += (df['Genre'] != 'No Genre') * 2
-        df['Score'] += (df['Synopsis'] != 'No Synopsis') * 2
-        df['Score'] += (df['Directors'] != 'No Directors') * 0.5
-        df['Score'] += (df['Cast'] != 'No Cast') * 0.5
-        print(df['Score'].value_counts())
+# Guardar el DataFrame final
+df_actualizado.to_csv('datos_completos.csv', index=False)
 
-    df = df[df['Score'] >= 6]
 
-    return df
-
-completar_datos_tmdb(df)
 
 
 

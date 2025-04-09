@@ -1,108 +1,113 @@
-import firebase_admin
-from firebase_admin import credentials, firestore
 import vertexai
 from vertexai.language_models import TextEmbeddingModel
-from google.cloud import storage
+from google.cloud import bigquery, storage, aiplatform
+import pandas as pd
 import json
+import os
+from uuid import uuid4
 
-# Inicialización
-cred = credentials.Certificate('bubbo-dfba0-47e395cdcdc7.json')
-firebase_admin.initialize_app(cred)
-db = firestore.client()
+os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "../../../bubbo-dfba0-47e395cdcdc7.json"
 
-PROJECT_ID = "bubbo-dfba0"
-REGION = "us-central1"
-MODEL_ID = "text-multilingual-embedding-002"
-vertexai.init(project=PROJECT_ID, location=REGION)
-model = TextEmbeddingModel.from_pretrained(MODEL_ID)
+PROJECT = "bubbo-dfba0"  
+LOCATION = "europe-southwest1" 
+BUCKET_NAME = "embeddings_new_bucket"  
+GCS_PREFIX = "embeddings/movies_and_series"  
+BQ_QUERY = "SELECT tmdb_id AS ID, title, genres, synopsis FROM `bubbo-dfba0.content.best_content_translated_py`"
+EMBEDDING_MODEL = "textembedding-gecko-multilingual" 
 
-# Cloud Storage
-storage_client = storage.Client()
-bucket_name = "all_content_embeddings_for_matching"
-bucket = storage_client.bucket(bucket_name)
+BATCH_SIZE = 1000 
 
-def get_text_embedding(text):
-    try:
-        print(f"Generando embedding para: {text[:50]}...")
-        embeddings = model.get_embeddings([text])
-        return embeddings[0].values
-    except Exception as e:
-        print(f"Error al generar embedding para {text[:50]}: {e}")
-        return None
+vertexai.init(project=PROJECT, location=LOCATION)
+embedding_model = TextEmbeddingModel.from_pretrained(EMBEDDING_MODEL)
+bq_client = bigquery.Client(project=PROJECT)
+storage_client = storage.Client(project=PROJECT)
 
-def process_and_store_embeddings():
-    print("Iniciando procesamiento de documentos...")
-    input_collection_ref = db.collection('Data_EN')
-    docs = input_collection_ref.stream()
-    total_docs = 0
-    updated_docs = 0
-    failed_embeddings = []
+# 1. Obtener datos de BigQuery (por páginas)
+def get_data_from_bigquery():
+    print("Ejecutando la consulta en BigQuery...")
+    
+    job = bq_client.query(BQ_QUERY)
+    iterator = job.result(page_size=BATCH_SIZE)  
+    pages = iterator.pages
+    
+    print("Consulta ejecutada, procesando los resultados...")
 
-    # Cargar IDs existentes del bucket
-    existing_ids = set()
-    for blob in bucket.list_blobs():
-        if blob.name.endswith('.json'):
-            try:
-                content = blob.download_as_text()
-                existing_data = json.loads(content)
-                if isinstance(existing_data, list):
-                    for item in existing_data:
-                        existing_ids.add(item.get('ID'))
-                elif isinstance(existing_data, dict):
-                    existing_ids.add(existing_data.get('ID'))
-            except json.JSONDecodeError:
-                print(f"Error al decodificar JSON del blob: {blob.name}")
-            except Exception as e:
-                print(f"Error al procesar blob {blob.name}: {e}")
+    all_rows = []
 
-    print(f"Se encontraron {len(existing_ids)} IDs existentes en el bucket.")
+    for page_num, page in enumerate(pages, start=1):
+        print(f"Procesando página {page_num}...")
+        all_rows.extend(page)
 
-    for doc in docs:
-        try:
-            data = doc.to_dict()
-            text = f"{data.get('CleanTitle', '')} {data.get('Genre', '')} {data.get('Synopsis', '')}".strip()
+    print("Todas las páginas procesadas, verificando la estructura de los datos...")
 
-            if text:
-                embedding = get_text_embedding(text)
-                if embedding is None:
-                    print(f"Error al obtener embedding para {doc.id}. Se omite.")
-                    failed_embeddings.append(doc.id)
-                    continue
+    # Extraer las tuplas de los objetos Row
+    all_rows = [list(row) for row in all_rows]  # Convertimos cada Row a una lista simple
 
-                embedding_data = {
-                    'ID': doc.id,
-                    'original_text': text,
-                    'embedding': embedding
-                }
-                json_data = json.dumps(embedding_data).encode('utf-8')
-                blob_name = f"{doc.id}.json"
+    print(f"Estructura de all_rows: {all_rows[:5]}")  # Muestra las primeras 5 filas para verificar
 
-                if doc.id not in existing_ids:
-                    blob = bucket.blob(blob_name)
-                    blob.upload_from_string(json_data, content_type='application/json')
-                    total_docs += 1
-                    updated_docs += 1
-                    print(f"Procesado {total_docs}: {doc.id} (Nuevo) -> {text[:30]}...")
+    # Convertir todas las filas a un DataFrame de pandas
+    columns = ['ID', 'title', 'genres', 'synopsis']  # Definir las columnas esperadas
+    df = pd.DataFrame(all_rows, columns=columns)
+    print("Columnas en el DataFrame:", df.columns)
 
-                elif doc.id in existing_ids:
-                    blob = bucket.blob(blob_name)
-                    blob.upload_from_string(json_data, content_type='application/json')
-                    total_docs += 1
-                    print(f"Procesado {total_docs}: {doc.id} (Actualizado) -> {text[:30]}...")
+    # Mostrar las primeras filas para ver el contenido
+    print("Primeros registros del DataFrame:")
+    print(df.head())  # Mostrar las primeras filas del DataFrame
 
-                if total_docs % 1000 == 0:
-                    print(f"Progreso: {total_docs} documentos procesados.")
+    # Obtener los datos de las columnas que nos interesan
+    ids = df["ID"].astype(str).tolist()  # Obtener los IDs
+    texts = df["title"].astype(str).tolist()  # Obtener los títulos
+    
+    print(f"Se han obtenido {len(ids)} registros de BigQuery.")
+    
+    return ids, texts
 
-        except Exception as e:
-            print(f"Error al procesar documento {doc.id}: {e}")
-            failed_embeddings.append(doc.id)
 
-    # Guardar los IDs de los embeddings fallidos
-    if failed_embeddings:
-        with open("failed_embeddings.json", "w") as f:
-            json.dump(failed_embeddings, f, indent=4)
-        print(f"Se encontraron {len(failed_embeddings)} embeddings fallidos. IDs guardados en failed_embeddings.json")
+# 2. Crear embeddings de los textos utilizando Vertex AI
+def create_embeddings(texts):
+    embeddings = embedding_model.get_embeddings(texts)  # Crear embeddings para los textos
+    return [e.values for e in embeddings]  # Devuelve una lista de embeddings
 
-    print(f"Finalizado. Total de documentos procesados: {total_docs}. Documentos Nuevos o actualizados: {updated_docs}")
+# 3. Subir los embeddings a GCS (Google Cloud Storage)
+def upload_to_gcs(local_file_path, gcs_path):
+    bucket = storage_client.bucket(BUCKET_NAME)  
+    blob = bucket.blob(gcs_path)  
+    blob.upload_from_filename(local_file_path)  
+    print(f"Subido a GCS: {gcs_path}")
 
-process_and_store_embeddings()
+# Función para guardar los embeddings en un archivo JSONL y subir a GCS
+def save_embeddings_to_gcs(ids, embeddings, part):
+    jsonl_path = f"/tmp/embeddings_part_{part}.jsonl"  
+    with open(jsonl_path, "w") as f:
+        for i in range(len(ids)):
+            item = {"id": ids[i], "embedding": embeddings[i]}  
+            f.write(json.dumps(item) + "\n")  
+    
+    gcs_path = f"{GCS_PREFIX}/embeddings_part_{part}.jsonl"  
+    upload_to_gcs(jsonl_path, gcs_path)  
+    return f"gs://{BUCKET_NAME}/{gcs_path}"
+
+# 4. Procesar en batches, crear embeddings y subir a GCS
+def process_and_upload_batches():
+    print("Iniciando el proceso de obtener datos y crear embeddings...")
+    
+    ids, texts = get_data_from_bigquery()
+
+    if not ids or not texts:
+        print("Error al obtener los datos. Terminando el proceso.")
+        return ""
+
+    print("Creando embeddings para los títulos...")
+    embeddings = create_embeddings(texts)  
+
+    print("Subiendo los embeddings a GCS...")
+    gcs_file_uri = save_embeddings_to_gcs(ids, embeddings, part=1)  
+    
+    print("Embeddings subidos con éxito.")
+    return gcs_file_uri
+
+# MAIN
+if __name__ == "__main__":
+    print("Comenzando el proceso de batch...")
+    gcs_file_uri = process_and_upload_batches()  
+    print(f"Embeddings subidos a: {gcs_file_uri}")

@@ -1,60 +1,83 @@
-import firebase_admin
-from firebase_admin import credentials, firestore
 import vertexai
 from vertexai.language_models import TextEmbeddingModel
+from google.cloud import bigquery, storage
+import pandas as pd
+import json
+import os
+import time
 
-# Inicializa Firebase Admin SDK
-cred = credentials.Certificate('bubbo-dfba0-47e395cdcdc7.json')
-firebase_admin.initialize_app(cred)
 
-# Inicializa el cliente de Firebase Firestore
-db = firestore.client()
+# Configuración
+os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "../../../bubbo-dfba0-47e395cdcdc7.json"
+PROJECT = "bubbo-dfba0"
+LOCATION = "europe-southwest1"
+BUCKET_NAME = "embeddings_new_bucket"
+GCS_PREFIX = "embeddings/movies_and_series"
+BQ_QUERY = """
+    SELECT tmdb_id AS ID, title, genres, synopsis 
+    FROM `bubbo-dfba0.content.best_content_translated_py`
+    LIMIT 500000
+    OFFSET 48615
+"""
+EMBEDDING_MODEL = "text-multilingual-embedding-002"
+BATCH_SIZE = 11  # Solo 10 registros
 
-# Inicializa Vertex AI
-PROJECT_ID = "bubbo-dfba0"
-REGION = "us-central1"  # Región donde está alojado el servicio
-MODEL_ID = "text-multilingual-embedding-002"  # El ID del modelo que quieres usar
+# Inicializar APIs
+vertexai.init(project=PROJECT, location=LOCATION)
+bq_client = bigquery.Client(project=PROJECT)
+storage_client = storage.Client(project=PROJECT)
 
-vertexai.init(project=PROJECT_ID, location=REGION)
+# Cargar el modelo de embeddings
+try:
+    embedding_model = TextEmbeddingModel.from_pretrained(EMBEDDING_MODEL)
+    print("Modelo de embeddings cargado correctamente.")
+except Exception as e:
+    print(f"Error al cargar el modelo de embeddings: {e}")
+    raise
 
-# Cargar el modelo de embeddings preentrenado
-model = TextEmbeddingModel.from_pretrained(MODEL_ID)
+def get_data_from_bigquery():
+    print("Ejecutando la consulta en BigQuery...")
+    job = bq_client.query(BQ_QUERY)
+    iterator = job.result()
+    rows = list(iterator)
 
-def get_text_embedding(text):
-    """Genera el embedding para un texto usando Vertex AI"""
-    print(f"Generando embedding para: {text[:50]}...")
-    embeddings = model.get_embeddings([text])
-    return embeddings[0].values  # Devuelve el vector de embeddings
+    if not rows:
+        print("No se encontraron resultados.")
+        return [], []
 
-def process_and_store_embeddings():
-    """Lee desde la colección de entrada, genera embeddings y guarda en la colección de salida con el mismo ID"""
-    print("Iniciando procesamiento de documentos...")
+    data = [{"ID": row["ID"], "title": row["title"], "genres": row["genres"], "synopsis": row["synopsis"]} for row in rows]
+    df = pd.DataFrame(data)
 
-    # Referencias a las colecciones
-    input_collection_ref = db.collection('Data_EN')
-    output_collection_ref = db.collection('embeddings')
+    return df['ID'].astype(str).tolist(), df['title'].astype(str).tolist()
 
-    # Lee los documentos de la colección de entrada
-    docs = input_collection_ref.stream()
-    total_docs = 0
+def create_embeddings(texts):
+    embeddings = embedding_model.get_embeddings(texts)
+    return [embedding.values for embedding in embeddings]
 
-    for doc in docs:
-        data = doc.to_dict()
-        text = f"{data.get('CleanTitle', '')} {data.get('Genre', '')} {data.get('Synopsis', '')}".strip()
+def upload_embeddings_to_gcs(ids, titles):
+    for id, text in zip(ids, titles):
+        gcs_path = f"{GCS_PREFIX}/{id}.json"
+        blob = storage_client.bucket(BUCKET_NAME).blob(gcs_path)
 
-        if text:
-            # Genera el embedding para el texto
-            embedding = get_text_embedding(text)
+        # Validar si el archivo ya existe en GCS
+        if blob.exists():
+            print(f"El embedding de ID {id} ya existe en GCS. Saltando...")
+            continue
 
-            # Guarda el resultado en la colección de salida con el mismo ID
-            output_collection_ref.document(doc.id).set({
-                'original_text': text,
-                'embedding': embedding
-            })
-            total_docs += 1
-            print(f"Procesado {total_docs}: {doc.id} -> {text[:30]}...")
+        # Si no existe, generar y subir
+        embedding = embedding_model.get_embeddings([text])[0].values
+        time.sleep(0.4)
+        with open(f"/tmp/{id}.json", "w") as f:
+            json.dump({"id": id, "embedding": embedding}, f)
+
+        blob.upload_from_filename(f"/tmp/{id}.json")
+        print(f"Embedding de ID {id} subido a: {gcs_path}")
+
+# MAIN
+if __name__ == "__main__":
+    ids, titles = get_data_from_bigquery()
     
-    print(f"Finalizado. Total de documentos procesados: {total_docs}")
-
-# Llamada para procesar y almacenar los embeddings
-process_and_store_embeddings()
+    if ids:
+        upload_embeddings_to_gcs(ids, titles)
+    else:
+        print("No se encontraron IDs para procesar.")

@@ -4,5 +4,5 @@
 | `from_user_pref_to_similarities.ipynb`    |  Agustin Lujan     | Obtiene datos desde Dynamodb de 'User Preferences content' y prepara la info para la obtencion de embeddings. Obtiene los embeddings, y genera recomendaciones por similaridad con las pref del usuario | 'Data_EN', DynamoDB 'user_pref...', embeddings_bucket_backup  | Recomendaciones en tiempo real  |
 | `translations.ipynb`       |  Agustin Lujan     |  Traduce al español las columnas genres, title y synopsis de la tabla `best_content` del dataset content en BigQuery, y guarda los resultados en una nueva tabla llamada `best_content_translated`     |  `bubbo-dfba0.content.best_content` |  `bubbo-dfba0.content.best_content_translated`  |
 | `embeddings_generator.py` | Agustin Lujan - Ruben Carrasco | Genera embeddings con Vertex AI para los títulos desde BigQuery y los sube a Cloud Storage si aún no existen | `bubbo-dfba0.content.best_content_translated_py` | PROJECT = "bubbo-dfba0", LOCATION = "europe-southwest1", BUCKET_NAME = "embeddings_new_bucket", GCS_PREFIX = `embeddings/movies_and_series/{tmdb_id}.json` |
-|  |  |  |  |  |
+| generador de index para vertex |  |  |  |  |
 |-------------------|---------------|-----------------------------------|-------------------------|--------------------------|

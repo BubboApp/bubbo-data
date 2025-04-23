@@ -6,3 +6,6 @@
 | `embeddings_generator.py` | Agustin Lujan - Ruben Carrasco | Genera embeddings con Vertex AI para los títulos desde BigQuery y los sube a Cloud Storage si aún no existen | `bubbo-dfba0.content.best_content_translated_py` | PROJECT = "bubbo-dfba0", LOCATION = "europe-southwest1", BUCKET_NAME = "embeddings_new_bucket", GCS_PREFIX = `embeddings/movies_and_series/{tmdb_id}.json` |
 | generador de index para vertex |  |  |  |  |
 |-------------------|---------------|-----------------------------------|-------------------------|--------------------------|
+
+
+Endpoint creado: projects/75629471929/locations/us-central1/indexEndpoints/6508829560480464896

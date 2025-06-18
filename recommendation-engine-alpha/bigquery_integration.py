@@ -3,7 +3,7 @@ import os
 from google.cloud import bigquery
 
 # Establecer credenciales
-os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "/workspaces/python-13/firebase.json"
+os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "/workspaces/python-13/firebase.json" # si se hace en local cambiar ruta, esto está así para operarlo desde una VM
 
 # Configurar cliente
 client = bigquery.Client(location="europe-southwest1")

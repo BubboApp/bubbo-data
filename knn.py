@@ -110,18 +110,4 @@ def mostrar_recomendaciones(recommended_ids, path="es_netflix.jsonl"):
                 print("---")
 
 # ========== MAIN ==========
-if __name__ == "__main__":
-    print("🎬 Creando embeddings maestro...")
-    master_embeddings = create_master_embeddings()
-    emb_dict = build_embedding_dict(master_embeddings)
 
-    movie_tmdb_id = "475557"  # <- Cambia esto si quieres otro
-    movie_embedding = emb_dict.get(movie_tmdb_id)
-
-    if movie_embedding:
-        print("🔍 Consultando recomendaciones...")
-        recommended_ids = recommend(movie_tmdb_id, movie_embedding)
-        print(f"📌 IDs recomendados: {recommended_ids}")
-        mostrar_recomendaciones(recommended_ids)
-    else:
-        print(f"❌ No se encontró embedding para TMDB ID: {movie_tmdb_id}")
